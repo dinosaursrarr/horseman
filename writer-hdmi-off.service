@@ -1,0 +1,12 @@
+[Unit]
+Description=Power off HDMI output at boot (battery saving - no screen in normal use)
+After=local-fs.target
+Before=writer.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/vcgencmd display_power 0
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

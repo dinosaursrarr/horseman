@@ -1,0 +1,9 @@
+[Unit]
+Description=Sync writing directory to cloud storage (one-shot, run by writer-sync.timer)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/writer/sync.py
+User=pi

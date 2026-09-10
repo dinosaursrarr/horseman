@@ -1,0 +1,37 @@
+[Unit]
+Description=Headless writing machine - main input loop
+After=systemd-user-sessions.service
+Conflicts=getty@tty1.service
+Before=getty@tty1.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/writer/writer.py
+User=pi
+
+# systemd (running as root) opens tty1 and hands the already-open fd to
+# our unprivileged process below - `pi` never needs raw permission on
+# the device itself. Conflicts=/Before= above stop the normal login
+# prompt from ever starting on this VT; `systemctl mask getty@tty1` at
+# install time is the belt-and-braces version of the same thing.
+TTYPath=/dev/tty1
+StandardInput=tty
+StandardOutput=tty
+StandardError=journal
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+
+# Whatever happens, keep trying: a machine whose whole purpose is this
+# one program should never permanently give up and sit at a dead
+# console. (The heartbeat LED going solid already tells you something's
+# wrong if it's stuck in a genuine crash loop.)
+Restart=always
+RestartSec=1
+
+RuntimeDirectory=writer
+RuntimeDirectoryMode=0755
+
+[Install]
+WantedBy=multi-user.target

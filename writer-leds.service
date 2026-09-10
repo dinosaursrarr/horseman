@@ -1,0 +1,20 @@
+[Unit]
+Description=Headless writing machine - keyboard LED status daemon
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/writer/led_daemon.py
+# setleds needs root (or at minimum CAP_SYS_TTY_CONFIG - untested from
+# here, root is the safe default until that's verified on real hardware).
+User=root
+
+# Deliberately NOT coupled to writer.service's own restarts (no
+# PartOf=/After=): this reads status.json independently and handles a
+# missing file gracefully, so it has no need to bounce every time the
+# writing app itself does. Its own crashes are handled the same way.
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target
