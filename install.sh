@@ -110,7 +110,7 @@ HEADER
         # there's no decision here to get wrong - the earlier bug was
         # exactly this choice (scope, and a manually-set root folder) made
         # through that wizard.
-        sudo -u "$RUN_USER" -c rclone config create "$remote_name" drive \
+        sudo -u "$RUN_USER" rclone config create "$remote_name" drive \
             config_is_local=false \
             scope=drive.file \
             token="$auth_token"
