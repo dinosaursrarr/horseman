@@ -229,11 +229,16 @@ def main():
         decoder = codecs.getincrementaldecoder("utf-8")()
         entry = Entry(WRITE_DIR)
         print("writer.py: ready", file=sys.stderr, flush=True)
-        # A previous session may have left these set (e.g. if writer.py
-        # was killed rather than exited cleanly) - a fresh launch always
-        # means we're back in ordinary writing mode, not mid-confirmation
-        # or mid-maintenance-shell.
-        set_status(confirm_shell=None, maintenance_mode=None)
+        # A previous session may have left any of these set (e.g. if
+        # writer.py was killed, or lost power, mid-flow rather than
+        # exiting cleanly) - a fresh launch always means ordinary writing
+        # mode, never mid-confirmation, mid-maintenance-shell, or
+        # mid-setup. Clearing "setup" matters most: unlike success/
+        # failure (which self-expire by age in decide_patterns), the
+        # "field"/"processing" phases have no expiry at all, and "setup"
+        # takes top priority over every other LED state - a stale value
+        # here would silently hide all other status feedback forever.
+        set_status(confirm_shell=None, maintenance_mode=None, setup=None)
 
         mode = "writing"          # "writing" | "ssid" | "password" | "confirm_shell"
         line_buffer = []          # in-memory only - SSID/password never

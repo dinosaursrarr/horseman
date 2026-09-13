@@ -17,6 +17,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 SCRIPT = HERE / "install.sh"
+UNINSTALL_SCRIPT = HERE / "uninstall.sh"
 
 
 def _make_stub(bin_dir, name, body):
@@ -25,7 +26,7 @@ def _make_stub(bin_dir, name, body):
     path.chmod(path.stat().st_mode | stat.S_IEXEC)
 
 
-def _make_sandbox(tmp_path, with_ssh_key=False, rclone_body='exit 0'):
+def _make_sandbox(tmp_path, with_ssh_key=False, rclone_body='exit 0', has_desktop_packages=False):
     """Builds a fake install target: stub binaries, a source checkout to
     install *from*, and every overridable path pointing inside tmp_path."""
     bin_dir = tmp_path / "bin"
@@ -35,17 +36,29 @@ def _make_sandbox(tmp_path, with_ssh_key=False, rclone_body='exit 0'):
     _make_stub(bin_dir, "apt-get", f'echo "apt-get $*" >> {log}\nexit 0')
     _make_stub(bin_dir, "systemctl", f'echo "systemctl $*" >> {log}\nexit 0')
     _make_stub(bin_dir, "rclone", f'echo "rclone $*" >> {log}\n{rclone_body}')
+    _make_stub(bin_dir, "chown", f'echo "chown $*" >> {log}\nexit 0')
+    # Real sudo ignores our PATH override (secure_path) and would try to
+    # run the genuine system rclone instead of this stub - not a bug in
+    # install.sh/uninstall.sh, just a sandboxing quirk of sudo itself.
+    _make_stub(bin_dir, "sudo", 'if [ "$1" = "-u" ]; then shift 2; fi\nexec "$@"')
+    # dpkg -s <pkg>: exit 0 (installed) if faking a Desktop image, else 1.
+    dpkg_exit = "0" if has_desktop_packages else "1"
+    _make_stub(bin_dir, "dpkg", f'echo "dpkg $*" >> {log}\nexit {dpkg_exit}')
 
     # A minimal source checkout to install *from* - install.sh copies
     # these by name, it doesn't care that they're empty stand-ins here.
     src = tmp_path / "src"
     src.mkdir()
     for name in ("writer.py", "led_daemon.py", "sync.py", "status.py", "enable-hdmi.sh",
-                 "writer.service", "writer-leds.service", "writer-sync.service",
                  "writer-sync.timer", "writer-hdmi-off.service"):
         (src / name).write_text("# stub\n")
+    (src / "writer.service").write_text("[Service]\nUser=pi\nExecStart=/bin/true\n")
+    (src / "writer-sync.service").write_text("[Service]\nUser=pi\nExecStart=/bin/true\n")
+    (src / "writer-leds.service").write_text("[Service]\nUser=root\nExecStart=/bin/true\n")
     (src / "install.sh").write_text(SCRIPT.read_text())
     (src / "install.sh").chmod(0o755)
+    (src / "uninstall.sh").write_text(UNINSTALL_SCRIPT.read_text())
+    (src / "uninstall.sh").chmod(0o755)
 
     install_dir = tmp_path / "opt-writer"
     config_dir = tmp_path / "etc-writer"
@@ -89,22 +102,37 @@ def test_skips_sync_setup_and_writes_placeholder_config(tmp_path):
 
 def test_configures_sync_when_requested(tmp_path):
     script, env, log, install_dir, config_dir, unit_dir, _ = _make_sandbox(tmp_path)
-    result = _run(script, env, stdin_text="y\nmy_drive\nnotes\nn\n")
+    result = _run(script, env, stdin_text="y\nFAKETOKEN123\nmy_drive\nnotes\n")
 
     assert result.returncode == 0, result.stderr
     config = (config_dir / "config.env").read_text()
     assert "SYNC_REMOTE=my_drive:notes" in config
-    calls = log.read_text().splitlines()
-    assert any(c.startswith("rclone config") for c in calls)
+    calls = log.read_text()
+    # The safe scope is hardcoded by install.sh itself, not left as a
+    # decision the person could get wrong - this is exactly what the
+    # earlier real bug was (wrong scope + a manually-set root folder).
+    assert "config create my_drive drive" in calls
+    assert "scope=drive.file" in calls
+    assert "token=FAKETOKEN123" in calls
+    assert "root_folder_id" not in calls  # never set at all - stays blank
 
 
 def test_sync_folder_defaults_to_writing_when_left_blank(tmp_path):
     script, env, log, install_dir, config_dir, unit_dir, _ = _make_sandbox(tmp_path)
-    result = _run(script, env, stdin_text="y\nmy_drive\n\nn\n")  # blank folder
+    result = _run(script, env, stdin_text="y\nFAKETOKEN123\nmy_drive\n\n")  # blank folder
 
     assert result.returncode == 0, result.stderr
     config = (config_dir / "config.env").read_text()
     assert "SYNC_REMOTE=my_drive:writing" in config
+
+
+def test_sync_remote_name_defaults_to_writer_drive_when_left_blank(tmp_path):
+    script, env, log, install_dir, config_dir, unit_dir, _ = _make_sandbox(tmp_path)
+    result = _run(script, env, stdin_text="y\nFAKETOKEN123\n\nnotes\n")  # blank remote name
+
+    assert result.returncode == 0, result.stderr
+    config = (config_dir / "config.env").read_text()
+    assert "SYNC_REMOTE=writer_drive:notes" in config
 
 
 def test_existing_config_is_left_untouched_on_rerun(tmp_path):
@@ -120,7 +148,7 @@ def test_existing_config_is_left_untouched_on_rerun(tmp_path):
 
 
 def test_installs_files_and_units(tmp_path):
-    script, env, log, install_dir, config_dir, unit_dir, _ = _make_sandbox(tmp_path)
+    script, env, log, install_dir, config_dir, unit_dir, *_ = _make_sandbox(tmp_path)
     _run(script, env, stdin_text="n\nn\n")
 
     assert (install_dir / "writer.py").exists()
@@ -130,6 +158,29 @@ def test_installs_files_and_units(tmp_path):
     assert os.access(install_dir / "enable-hdmi.sh", os.X_OK)
     assert (unit_dir / "writer.service").exists()
     assert (unit_dir / "writer-sync.timer").exists()
+
+
+def test_installed_units_run_as_the_real_invoking_user_not_hardcoded_pi(tmp_path):
+    """Real bug, found on real hardware: install.sh detected the actual
+    user correctly for chown/home-dir purposes but never applied it to
+    the unit files themselves, which still said 'User=pi' verbatim - a
+    problem on any Pi where the account isn't literally named 'pi'
+    (Raspberry Pi Imager lets you pick any username now)."""
+    script, env, log, install_dir, config_dir, unit_dir, *_ = _make_sandbox(tmp_path)
+    env["SUDO_USER"] = "tom"
+    _run(script, env, stdin_text="n\nn\n")
+
+    writer_unit = (unit_dir / "writer.service").read_text()
+    sync_unit = (unit_dir / "writer-sync.service").read_text()
+    assert "User=tom" in writer_unit
+    assert "User=pi" not in writer_unit
+    assert "User=tom" in sync_unit
+
+    # These two must NOT be rewritten - they deliberately run as root.
+    leds_unit = (unit_dir / "writer-leds.service").read_text()
+    hdmi_unit = (unit_dir / "writer-hdmi-off.service").read_text()
+    assert "User=root" in leds_unit
+    assert "User=" not in hdmi_unit  # no directive at all -> implicit root, untouched
 
 
 def test_masks_getty_and_sets_console_boot_target(tmp_path):

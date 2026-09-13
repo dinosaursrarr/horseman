@@ -7,6 +7,7 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
+EnvironmentFile=-/etc/writer/config.env
 ExecStart=/usr/bin/python3 /opt/writer/writer.py
 User=pi
 

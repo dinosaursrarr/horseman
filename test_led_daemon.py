@@ -58,7 +58,26 @@ def test_pattern_pulse_is_a_brief_flash_mostly_off():
     assert led_daemon.pattern_is_on("pulse", 3.0) is True  # cycle repeats
 
 
-def test_pattern_stutter_is_distinguishable_from_fast_and_pulse():
+def test_alive_and_wifi_pulses_do_not_stay_permanently_synchronized():
+    """Real bug found on real hardware: num (alive) and caps (wifi
+    connected) both being true almost all the time, with identical
+    timing, meant they always flashed in lockstep - easily misread as
+    one combined signal rather than two independent ones. They should
+    drift in and out of alignment instead, since they have different
+    cycle lengths now."""
+    times_both_on = 0
+    times_num_only = 0
+    for i in range(10000):
+        t = i * 0.05
+        num_on = led_daemon.pattern_is_on("pulse", t)
+        caps_on = led_daemon.pattern_is_on("pulse_wifi", t)
+        if num_on and caps_on:
+            times_both_on += 1
+        elif num_on and not caps_on:
+            times_num_only += 1
+    # If they were still identical, num would never be on without caps
+    # also being on. Different cycle lengths guarantee some drift.
+    assert times_num_only > 0
     # stutter has 3 on-pulses then a long pause - just confirm it isn't
     # simply identical to fast or pulse across a full cycle.
     cycle = sum(d for _, d in led_daemon.PATTERNS["stutter"])
@@ -81,7 +100,7 @@ def test_normal_idle_alive_and_disconnected():
 def test_normal_idle_alive_and_connected():
     status = {"heartbeat": 100.0}
     result = led_daemon.decide_patterns(status, wifi_connected=True, now=100.5)
-    assert result == {"num": "pulse", "caps": "pulse"}
+    assert result == {"num": "pulse", "caps": "pulse_wifi"}
 
 
 def test_stale_heartbeat_shows_solid_num():
@@ -142,7 +161,7 @@ def test_setup_success_then_expires():
     during = led_daemon.decide_patterns(status, wifi_connected=True, now=101.0)
     after = led_daemon.decide_patterns(status, wifi_connected=True, now=110.0)
     assert during == {"num": "fast", "caps": "fast"}
-    assert after == {"num": "pulse", "caps": "pulse"}  # released back to normal
+    assert after == {"num": "pulse", "caps": "pulse_wifi"}  # released back to normal
 
 
 def test_setup_failure_then_expires():
@@ -168,7 +187,68 @@ def test_setup_overrides_a_stale_heartbeat():
 def test_setup_cleared_falls_through_to_normal_state():
     status = {"heartbeat": 100.0, "setup": None}
     result = led_daemon.decide_patterns(status, wifi_connected=True, now=100.5)
-    assert result == {"num": "pulse", "caps": "pulse"}
+    assert result == {"num": "pulse", "caps": "pulse_wifi"}
+
+
+def test_stale_setup_field_eventually_self_heals():
+    """The actual bug found on real hardware: an interrupted WiFi setup
+    (crash, reboot, power loss mid-flow) can leave setup.phase="field"
+    sitting forever, since that phase has no natural end the way
+    success/failure do. writer.py's own startup clears this explicitly,
+    but the LED daemon needs its own backstop too - both LEDs stuck
+    "on" forever would otherwise also permanently hide every other LED
+    state, since setup takes top priority."""
+    stuck_setup = {"flow": "wifi", "stage": 2, "phase": "field", "since": 0.0}
+    soon = led_daemon.decide_patterns(
+        {"heartbeat": 100.0, "setup": stuck_setup}, wifi_connected=False, now=100.0)
+    long_after = led_daemon.decide_patterns(
+        {"heartbeat": led_daemon.STALE_SETUP_TIMEOUT + 100.0, "setup": stuck_setup},
+        wifi_connected=True, now=led_daemon.STALE_SETUP_TIMEOUT + 100.0)
+
+    assert soon == {"num": "on", "caps": "on"}
+    assert long_after == {"num": "pulse", "caps": "pulse_wifi"}  # self-healed
+
+
+def test_stale_setup_processing_also_self_heals():
+    stuck_setup = {"flow": "wifi", "stage": 2, "phase": "processing", "since": 0.0}
+    result = led_daemon.decide_patterns(
+        {"heartbeat": led_daemon.STALE_SETUP_TIMEOUT + 50.0, "setup": stuck_setup},
+        wifi_connected=False, now=led_daemon.STALE_SETUP_TIMEOUT + 50.0)
+    assert result == {"num": "pulse", "caps": "off"}
+
+
+def test_confirm_shell_shows_both_slow_synchronized():
+    status = {"heartbeat": 100.0, "confirm_shell": 100.0}
+    result = led_daemon.decide_patterns(status, wifi_connected=True, now=100.5)
+    assert result == {"num": "slow", "caps": "slow"}
+
+
+def test_maintenance_mode_overrides_a_stale_heartbeat():
+    """The whole point: writer.py has exec'd away and heartbeat is
+    necessarily stale by now, but that must not look like a crash."""
+    status = {"heartbeat": 0.0, "maintenance_mode": 100.0}
+    result = led_daemon.decide_patterns(status, wifi_connected=False, now=500.0)
+    assert result == {"num": "alt_a", "caps": "alt_b"}
+
+
+def test_maintenance_mode_outranks_confirm_shell_and_setup():
+    status = {
+        "heartbeat": 0.0,
+        "maintenance_mode": 100.0,
+        "confirm_shell": 100.0,
+        "setup": {"flow": "wifi", "stage": 1, "phase": "field", "since": 100.0},
+    }
+    result = led_daemon.decide_patterns(status, wifi_connected=False, now=100.5)
+    assert result == {"num": "alt_a", "caps": "alt_b"}
+
+
+def test_alt_patterns_are_genuinely_out_of_phase():
+    """The whole point of alt_a/alt_b is that assigning one to each LED
+    makes them visibly alternate, not blink together."""
+    samples = [i * 0.1 for i in range(20)]
+    a = [led_daemon.pattern_is_on("alt_a", t) for t in samples]
+    b = [led_daemon.pattern_is_on("alt_b", t) for t in samples]
+    assert a == [not x for x in b]
 
 
 # ============================================================

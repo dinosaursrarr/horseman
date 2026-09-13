@@ -45,6 +45,12 @@ install_units() {
     cp "$SCRIPT_DIR"/writer.service "$SCRIPT_DIR"/writer-leds.service \
        "$SCRIPT_DIR"/writer-sync.service "$SCRIPT_DIR"/writer-sync.timer \
        "$SCRIPT_DIR"/writer-hdmi-off.service "$UNIT_DIR"/
+    # The checked-in units say "User=pi" as a documented default - that's
+    # not necessarily who actually exists on this machine (Raspberry Pi
+    # Imager lets you pick any username now). Only the installed copies
+    # get rewritten; writer-leds.service/writer-hdmi-off.service are left
+    # alone since they deliberately run as root.
+    sed -i "s/^User=pi$/User=$RUN_USER/" "$UNIT_DIR/writer.service" "$UNIT_DIR/writer-sync.service"
     systemctl daemon-reload
 }
 
@@ -82,14 +88,32 @@ HEADER
 
     read -r -p "Set up Google Drive sync now? [y/N] " reply
     if [[ "$reply" =~ ^[Yy]$ ]]; then
-        echo "This hands off to rclone's own setup - answer 'n' to"
-        echo "\"Use auto config?\" (this is the headless machine itself),"
-        echo "then paste the token from running:  rclone authorize \"drive\""
-        echo "on any other device that has a browser."
-        rclone config
-        read -r -p "Remote name you just created: " remote_name
+        echo ""
+        echo "On any OTHER device with a browser (doesn't need to be on this"
+        echo "network, or even the same machine ever again after this) - install"
+        echo "rclone if it isn't already there, then run:"
+        echo "    rclone authorize \"drive\""
+        echo "Approve access in the browser, then paste what it prints back below."
+        echo ""
+        read -r -p "Paste the token here: " auth_token
+        read -r -p "Name for this remote [writer_drive]: " remote_name
+        remote_name="${remote_name:-writer_drive}"
         read -r -p "Folder within it to sync to [writing]: " remote_folder
         remote_folder="${remote_folder:-writing}"
+
+        # scope=drive.file, and never touching root_folder_id at all, means
+        # this remote can only ever see or write files/folders it creates
+        # itself - it's structurally incapable of touching anything else
+        # already in the Drive account, existing folders included. This is
+        # done as a direct, non-interactive rclone config create rather than
+        # handing off to the generic interactive wizard specifically so
+        # there's no decision here to get wrong - the earlier bug was
+        # exactly this choice (scope, and a manually-set root folder) made
+        # through that wizard.
+        rclone config create "$remote_name" drive \
+            config_is_local=false \
+            scope=drive.file \
+            token="$auth_token"
         echo "SYNC_REMOTE=${remote_name}:${remote_folder}" >> "$CONFIG_FILE"
     else
         {
@@ -104,6 +128,7 @@ HEADER
 
 lockdown_console() {
     echo "==> Handing tty1 over to writer.service..."
+    systemctl get-default > "$CONFIG_DIR/previous-boot-target"
     systemctl mask getty@tty1.service
     systemctl set-default multi-user.target
 }

@@ -416,6 +416,7 @@ def test_backspace_deletes_last_char(spawned):
 
 F2_BYTES = b"\x1b[[B"     # Linux console's own (non-standard) F2 sequence
 F8_BYTES = b"\x1b[19~"    # Linux console's F8 sequence
+F12_BYTES = b"\x1b[24~"   # Linux console's F12 sequence
 ESCAPE_BYTES = b"\x1b"    # sent alone - must be recognised as bare Escape
 
 
@@ -484,27 +485,87 @@ def test_inactivity_timeout_ends_the_entry(tmp_path):
         os.close(master_fd)
 
 
-def test_secret_phrase_is_stripped_and_really_execs(tmp_path):
+def test_f12_twice_confirms_and_really_execs(tmp_path):
     """WRITER_SHELL_CMD=true substitutes a harmless binary for 'login' so
     the real execvp() path runs end to end without touching real auth.
     If drop_to_shell or its call site is broken, this hangs or the
     process never exits with code 0."""
-    proc, master_fd = _spawn(
-        tmp_path,
-        extra_env={"WRITER_SECRET_PHRASE": "xyzzy", "WRITER_SHELL_CMD": "true"},
-    )
-    # "world" is deliberately never read: the process execs away as soon
-    # as "xyzzy" completes, mid-stream, exactly like it would for real.
-    _type(master_fd, b"hello xyzzy world")
+    proc, master_fd = _spawn(tmp_path, extra_env={"WRITER_SHELL_CMD": "true"})
+    _type(master_fd, F12_BYTES)
+    out = _read_until(master_fd, b"Press F12 again")
+    assert b"Press F12 again" in out
+    assert _wait_for(lambda: _status(tmp_path).get("confirm_shell") is not None)
+
+    _type(master_fd, F12_BYTES)
     try:
         returncode = proc.wait(timeout=2)
     finally:
         os.close(master_fd)
 
     assert returncode == 0  # `true`'s own exit code - proves a real exec happened
-    files = _files(tmp_path)
-    assert len(files) == 1
-    assert files[0].read_text() == "hello "  # "xyzzy" stripped, "world" never arrived
+    status = _status(tmp_path)
+    assert status.get("confirm_shell") is None
+    assert status.get("maintenance_mode") is not None
+
+
+def test_f12_then_other_key_cancels(spawned):
+    _proc, master_fd, write_dir = spawned
+    _type(master_fd, F12_BYTES)
+    _read_until(master_fd, b"Press F12 again")
+    assert _wait_for(lambda: _status(write_dir).get("confirm_shell") is not None)
+
+    _type(master_fd, b"x")  # anything other than a second F12 cancels
+    out = _read_until(master_fd, b"(cancelled)")
+    assert b"(cancelled)" in out
+    assert _wait_for(lambda: _status(write_dir).get("confirm_shell") is None)
+
+    # "x" itself must not have leaked into a file - it was consumed as
+    # the cancel keystroke, not treated as ordinary writing input.
+    assert _files(write_dir) == []
+
+    # and normal writing resumes correctly afterwards
+    _type(master_fd, b"back to writing")
+    assert _wait_for(lambda: _files(write_dir)
+                      and _files(write_dir)[0].read_text() == "back to writing")
+
+
+def test_f12_then_f2_also_cancels_rather_than_rotating(spawned):
+    """A second hotkey other than F12 while armed must still cancel, not
+    silently do nothing and not perform its own normal action."""
+    _proc, master_fd, write_dir = spawned
+    _type(master_fd, F12_BYTES)
+    _read_until(master_fd, b"Press F12 again")
+    _type(master_fd, F2_BYTES)
+    out = _read_until(master_fd, b"(cancelled)")
+    assert b"(cancelled)" in out
+    assert _wait_for(lambda: _status(write_dir).get("confirm_shell") is None)
+
+
+def test_fresh_launch_clears_stale_maintenance_flags(tmp_path):
+    """If writer.py was killed rather than exited cleanly, stale
+    confirm_shell/maintenance_mode/setup values could be left in
+    status.json from the previous session - a fresh launch must not
+    start in any of these states. 'setup' matters most: a real bug found
+    on real hardware was a stale setup.phase="field" (from an interrupted
+    WiFi setup) silently showing "both LEDs on" forever after reboot,
+    since setup has no self-expiry and takes top priority over every
+    other LED state in led_daemon's decide_patterns."""
+    status_path = tmp_path / ".status.json"
+    status_path.write_text(json.dumps({
+        "confirm_shell": 12345.0,
+        "maintenance_mode": 12345.0,
+        "setup": {"flow": "wifi", "stage": 2, "phase": "field", "since": 12345.0},
+        "heartbeat": 12345.0,
+    }))
+    proc, master_fd = _spawn(tmp_path)
+    try:
+        assert _wait_for(lambda: _status(tmp_path).get("confirm_shell") is None
+                          and _status(tmp_path).get("maintenance_mode") is None
+                          and _status(tmp_path).get("setup") is None)
+    finally:
+        proc.terminate()
+        proc.wait(timeout=1)
+        os.close(master_fd)
 
 
 def test_wifi_flow_prompts_and_never_echoes_or_saves_password(spawned):
@@ -519,21 +580,21 @@ def test_wifi_flow_prompts_and_never_echoes_or_saves_password(spawned):
     _type(master_fd, F8_BYTES)
     out = _read_until(master_fd, b"WiFi SSID: ")
     assert b"WiFi SSID: " in out
-    assert _wait_for(lambda: _status(write_dir).get("setup", {}).get("stage") == 1
+    assert _wait_for(lambda: (_status(write_dir).get("setup") or {}).get("stage") == 1
                       and _status(write_dir)["setup"]["phase"] == "field")
 
     _type(master_fd, b"MyHomeNet\r")
     out = _read_until(master_fd, b"WiFi password: ")
     assert b"MyHomeNet" in out   # SSID isn't secret, it's fine on screen
     assert b"WiFi password: " in out
-    assert _wait_for(lambda: _status(write_dir).get("setup", {}).get("stage") == 2
+    assert _wait_for(lambda: (_status(write_dir).get("setup") or {}).get("stage") == 2
                       and _status(write_dir)["setup"]["phase"] == "field")
 
     _type(master_fd, b"hunter2\r")
     out = _read_until(master_fd, b"Failed:")
     assert b"Failed:" in out
     assert b"hunter2" not in out          # the actual security property
-    assert _wait_for(lambda: _status(write_dir).get("setup", {}).get("phase") == "failure")
+    assert _wait_for(lambda: (_status(write_dir).get("setup") or {}).get("phase") == "failure")
 
     # None of the SSID/password exchange should ever touch a file.
     assert _files(write_dir) == []

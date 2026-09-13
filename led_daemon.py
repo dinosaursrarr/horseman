@@ -36,6 +36,7 @@ ROTATION_FLASH_WINDOW = 0.5
 SYNC_FAILURE_FLASH_WINDOW = 5.0
 SETUP_SUCCESS_DURATION = 3.0
 SETUP_FAILURE_HOLD_DURATION = 25.0
+STALE_SETUP_TIMEOUT = float(os.environ.get("LED_STALE_SETUP_TIMEOUT", 600.0))
 
 # Each pattern is a list of (is_on, duration) steps that repeat forever.
 # duration=None means "fixed state, no timing" (off/on).
@@ -43,6 +44,13 @@ PATTERNS = {
     "off": [(False, None)],
     "on": [(True, None)],
     "pulse": [(True, 0.1), (False, 2.9)],
+    # Same "brief flash, mostly off" character as "pulse", deliberately
+    # with a different cycle length (3.4s vs 3.0s) rather than reusing
+    # it outright: alive-heartbeat (num) and wifi-connected (caps) are
+    # both true almost all the time, and identical timing would make two
+    # logically independent channels flash in permanent lockstep, easily
+    # misread as one combined signal rather than two separate ones.
+    "pulse_wifi": [(True, 0.1), (False, 3.3)],
     "slow": [(True, 1.0), (False, 1.0)],
     "fast": [(True, 0.15), (False, 0.15)],
     "stutter": [(True, 0.1), (False, 0.1), (True, 0.1), (False, 0.1),
@@ -106,7 +114,9 @@ def decide_patterns(status, wifi_connected, now):
          this flag exists specifically so it doesn't.
       2. confirm_shell - F12 was pressed once, waiting on a second press
          or a cancel.
-      3. setup - an interactive WiFi/sync setup flow in progress.
+      3. setup - an interactive WiFi/sync setup flow in progress, unless
+         it's been sitting for over STALE_SETUP_TIMEOUT (a crash or power
+         loss mid-flow shouldn't wedge the display forever - see below).
       4. normal per-channel steady state.
 
     success/failure/rotation/sync-failure are all expressed the same way:
@@ -126,16 +136,24 @@ def decide_patterns(status, wifi_connected, now):
         stage = setup.get("stage", 1)
         age = now - setup.get("since", 0)
 
-        if phase == "field":
-            return {"num": "on" if stage >= 2 else "off", "caps": "on"}
-        if phase == "processing":
-            return {"num": "fast", "caps": "fast"}
-        if phase == "success" and age < SETUP_SUCCESS_DURATION:
-            return {"num": "fast", "caps": "fast"}
-        if phase == "failure" and age < SETUP_FAILURE_HOLD_DURATION:
-            return {"num": "stutter", "caps": "stutter"}
-        # any other phase, or an expired success/failure window, falls
-        # through to normal per-channel display below.
+        # field/processing have no natural end the way success/failure do
+        # (they just wait on the next keystroke), so a crash or power loss
+        # mid-flow could otherwise leave this stuck forever - and "setup"
+        # being top-priority means that would silently hide every other
+        # LED state too. writer.py's own startup already clears this
+        # explicitly; this is the belt-and-braces backstop.
+        if age < STALE_SETUP_TIMEOUT:
+            if phase == "field":
+                return {"num": "on" if stage >= 2 else "off", "caps": "on"}
+            if phase == "processing":
+                return {"num": "fast", "caps": "fast"}
+            if phase == "success" and age < SETUP_SUCCESS_DURATION:
+                return {"num": "fast", "caps": "fast"}
+            if phase == "failure" and age < SETUP_FAILURE_HOLD_DURATION:
+                return {"num": "stutter", "caps": "stutter"}
+        # any other phase, an expired success/failure window, or a setup
+        # that's simply been sitting too long, falls through to normal
+        # per-channel display below.
 
     heartbeat = status.get("heartbeat", 0)
     if now - heartbeat > HEARTBEAT_STALE_AFTER:
@@ -147,7 +165,7 @@ def decide_patterns(status, wifi_connected, now):
     else:
         num = "pulse"
 
-    caps = "pulse" if wifi_connected else "off"
+    caps = "pulse_wifi" if wifi_connected else "off"
 
     return {"num": num, "caps": caps}
 

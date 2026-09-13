@@ -4,6 +4,7 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
+EnvironmentFile=-/etc/writer/config.env
 ExecStart=/usr/bin/python3 /opt/writer/led_daemon.py
 # setleds needs root (or at minimum CAP_SYS_TTY_CONFIG - untested from
 # here, root is the safe default until that's verified on real hardware).
