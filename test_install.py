@@ -40,7 +40,8 @@ def _make_sandbox(tmp_path, with_ssh_key=False, rclone_body='exit 0', has_deskto
     # Real sudo ignores our PATH override (secure_path) and would try to
     # run the genuine system rclone instead of this stub - not a bug in
     # install.sh/uninstall.sh, just a sandboxing quirk of sudo itself.
-    _make_stub(bin_dir, "sudo", 'if [ "$1" = "-u" ]; then shift 2; fi\nexec "$@"')
+    _make_stub(bin_dir, "sudo", f'echo "sudo $*" >> {log}\n'
+                                 'if [ "$1" = "-u" ]; then shift 2; fi\nexec "$@"')
     # dpkg -s <pkg>: exit 0 (installed) if faking a Desktop image, else 1.
     dpkg_exit = "0" if has_desktop_packages else "1"
     _make_stub(bin_dir, "dpkg", f'echo "dpkg $*" >> {log}\nexit {dpkg_exit}')
@@ -102,7 +103,8 @@ def test_skips_sync_setup_and_writes_placeholder_config(tmp_path):
 
 def test_configures_sync_when_requested(tmp_path):
     script, env, log, install_dir, config_dir, unit_dir, _ = _make_sandbox(tmp_path)
-    result = _run(script, env, stdin_text="y\nFAKETOKEN123\nmy_drive\nnotes\n")
+    env["SUDO_USER"] = "tom"
+    result = _run(script, env, stdin_text="y\n\n\nFAKETOKEN123\nmy_drive\nnotes\n")
 
     assert result.returncode == 0, result.stderr
     config = (config_dir / "config.env").read_text()
@@ -115,11 +117,38 @@ def test_configures_sync_when_requested(tmp_path):
     assert "scope=drive.file" in calls
     assert "token=FAKETOKEN123" in calls
     assert "root_folder_id" not in calls  # never set at all - stays blank
+    # And run as the real user, not root - a second real bug found on
+    # real hardware: rclone's config lives under whoever invokes it, and
+    # the sync service runs as this user, not root.
+    assert "sudo -u tom rclone config create" in calls
+
+
+def test_sync_credentials_used_when_provided(tmp_path):
+    script, env, log, install_dir, config_dir, unit_dir, _ = _make_sandbox(tmp_path)
+    result = _run(script, env,
+                  stdin_text="y\nMY_CLIENT_ID\nMY_CLIENT_SECRET\nFAKETOKEN123\nmy_drive\nnotes\n")
+
+    assert result.returncode == 0, result.stderr
+    calls = log.read_text()
+    assert "client_id=MY_CLIENT_ID" in calls
+    assert "client_secret=MY_CLIENT_SECRET" in calls
+
+
+def test_sync_credentials_omitted_when_left_blank(tmp_path):
+    """Blank should mean 'let rclone use its shared default', not pass
+    empty-string client_id/client_secret through as literal values."""
+    script, env, log, install_dir, config_dir, unit_dir, _ = _make_sandbox(tmp_path)
+    result = _run(script, env, stdin_text="y\n\n\nFAKETOKEN123\nmy_drive\nnotes\n")
+
+    assert result.returncode == 0, result.stderr
+    calls = log.read_text()
+    assert "client_id=" not in calls
+    assert "client_secret=" not in calls
 
 
 def test_sync_folder_defaults_to_writing_when_left_blank(tmp_path):
     script, env, log, install_dir, config_dir, unit_dir, _ = _make_sandbox(tmp_path)
-    result = _run(script, env, stdin_text="y\nFAKETOKEN123\nmy_drive\n\n")  # blank folder
+    result = _run(script, env, stdin_text="y\n\n\nFAKETOKEN123\nmy_drive\n\n")  # blank folder
 
     assert result.returncode == 0, result.stderr
     config = (config_dir / "config.env").read_text()
@@ -128,7 +157,7 @@ def test_sync_folder_defaults_to_writing_when_left_blank(tmp_path):
 
 def test_sync_remote_name_defaults_to_writer_drive_when_left_blank(tmp_path):
     script, env, log, install_dir, config_dir, unit_dir, _ = _make_sandbox(tmp_path)
-    result = _run(script, env, stdin_text="y\nFAKETOKEN123\n\nnotes\n")  # blank remote name
+    result = _run(script, env, stdin_text="y\n\n\nFAKETOKEN123\n\nnotes\n")  # blank remote name
 
     assert result.returncode == 0, result.stderr
     config = (config_dir / "config.env").read_text()

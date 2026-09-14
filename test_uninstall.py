@@ -174,7 +174,7 @@ def test_ssh_password_auth_restored_when_confirmed(tmp_path):
 def test_rclone_remote_removal_offered_and_confirmed(tmp_path):
     script, env, log, install_dir, config_dir, unit_dir, _ = _make_sandbox(tmp_path)
     install, uninstall = _paths(script)
-    _run(install, env, stdin_text="y\nFAKETOKEN123\nmy_drive\nnotes\n")  # configure sync
+    _run(install, env, stdin_text="y\n\n\nFAKETOKEN123\nmy_drive\nnotes\n")  # configure sync
     log.write_text("")
 
     # Prompts in order here: rclone-removal (SYNC_REMOTE is set), then
@@ -191,7 +191,7 @@ def test_full_install_uninstall_reinstall_round_trip(tmp_path):
     script, env, log, install_dir, config_dir, unit_dir, sshd_config = _make_sandbox(tmp_path)
     install, uninstall = _paths(script)
 
-    first = _run(install, env, stdin_text="y\nFAKETOKEN123\nmy_drive\nnotes\n")
+    first = _run(install, env, stdin_text="y\n\n\nFAKETOKEN123\nmy_drive\nnotes\n")
     assert first.returncode == 0, first.stderr
     assert (install_dir / "writer.py").exists()
     assert (unit_dir / "writer.service").exists()

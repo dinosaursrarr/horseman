@@ -89,6 +89,20 @@ HEADER
     read -r -p "Set up Google Drive sync now? [y/N] " reply
     if [[ "$reply" =~ ^[Yy]$ ]]; then
         echo ""
+        echo "rclone's shared default API credentials are rate-limited across"
+        echo "every rclone user worldwide and have hit quota problems before -"
+        echo "for something you want to keep working, use your own instead:"
+        echo "  1. https://console.cloud.google.com -> create a project"
+        echo "  2. Enable the 'Google Drive API' for it"
+        echo "  3. OAuth consent screen -> External -> add yourself as a test user"
+        echo "  4. Credentials -> Create Credentials -> OAuth client ID -> Desktop app"
+        echo "That gives you a Client ID and Client Secret. Leave both blank below"
+        echo "to use rclone's shared defaults instead - works today, but it's the"
+        echo "thing most likely to break later."
+        echo ""
+        read -r -p "Client ID (blank for rclone's shared default): " client_id
+        read -r -p "Client Secret (blank for rclone's shared default): " client_secret
+        echo ""
         echo "On any OTHER device with a browser (doesn't need to be on this"
         echo "network, or even the same machine ever again after this) - install"
         echo "rclone if it isn't already there, then run:"
@@ -101,18 +115,17 @@ HEADER
         read -r -p "Folder within it to sync to [writing]: " remote_folder
         remote_folder="${remote_folder:-writing}"
 
-        # scope=drive.file, and never touching root_folder_id at all, means
-        # this remote can only ever see or write files/folders it creates
-        # itself - it's structurally incapable of touching anything else
-        # already in the Drive account, existing folders included. This is
-        # done as a direct, non-interactive rclone config create rather than
-        # handing off to the generic interactive wizard specifically so
-        # there's no decision here to get wrong - the earlier bug was
-        # exactly this choice (scope, and a manually-set root folder) made
-        # through that wizard.
+        # Run as RUN_USER, NOT root: rclone's config file lives under
+        # whichever account invokes it ($HOME-relative), and
+        # writer-sync.service runs as RUN_USER - creating it as root
+        # (install.sh's own user throughout) would silently write to
+        # root's own config, invisible to the actual sync service. Real
+        # bug, found on real hardware.
         sudo -u "$RUN_USER" rclone config create "$remote_name" drive \
             config_is_local=false \
             scope=drive.file \
+            ${client_id:+client_id="$client_id"} \
+            ${client_secret:+client_secret="$client_secret"} \
             token="$auth_token"
         echo "SYNC_REMOTE=${remote_name}:${remote_folder}" >> "$CONFIG_FILE"
     else
