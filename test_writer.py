@@ -416,7 +416,7 @@ def test_backspace_deletes_last_char(spawned):
 
 F2_BYTES = b"\x1b[[B"     # Linux console's own (non-standard) F2 sequence
 F8_BYTES = b"\x1b[19~"    # Linux console's F8 sequence
-F12_BYTES = b"\x1b[24~"   # Linux console's F12 sequence
+F10_BYTES = b"\x1b[21~"   # Linux console's F10 sequence
 ESCAPE_BYTES = b"\x1b"    # sent alone - must be recognised as bare Escape
 
 
@@ -485,18 +485,18 @@ def test_inactivity_timeout_ends_the_entry(tmp_path):
         os.close(master_fd)
 
 
-def test_f12_twice_confirms_and_really_execs(tmp_path):
+def test_f10_twice_confirms_and_really_execs(tmp_path):
     """WRITER_SHELL_CMD=true substitutes a harmless binary for 'login' so
     the real execvp() path runs end to end without touching real auth.
     If drop_to_shell or its call site is broken, this hangs or the
     process never exits with code 0."""
     proc, master_fd = _spawn(tmp_path, extra_env={"WRITER_SHELL_CMD": "true"})
-    _type(master_fd, F12_BYTES)
-    out = _read_until(master_fd, b"Press F12 again")
-    assert b"Press F12 again" in out
+    _type(master_fd, F10_BYTES)
+    out = _read_until(master_fd, b"Press F10 again")
+    assert b"Press F10 again" in out
     assert _wait_for(lambda: _status(tmp_path).get("confirm_shell") is not None)
 
-    _type(master_fd, F12_BYTES)
+    _type(master_fd, F10_BYTES)
     try:
         returncode = proc.wait(timeout=2)
     finally:
@@ -508,13 +508,13 @@ def test_f12_twice_confirms_and_really_execs(tmp_path):
     assert status.get("maintenance_mode") is not None
 
 
-def test_f12_then_other_key_cancels(spawned):
+def test_f10_then_other_key_cancels(spawned):
     _proc, master_fd, write_dir = spawned
-    _type(master_fd, F12_BYTES)
-    _read_until(master_fd, b"Press F12 again")
+    _type(master_fd, F10_BYTES)
+    _read_until(master_fd, b"Press F10 again")
     assert _wait_for(lambda: _status(write_dir).get("confirm_shell") is not None)
 
-    _type(master_fd, b"x")  # anything other than a second F12 cancels
+    _type(master_fd, b"x")  # anything other than a second F10 cancels
     out = _read_until(master_fd, b"(cancelled)")
     assert b"(cancelled)" in out
     assert _wait_for(lambda: _status(write_dir).get("confirm_shell") is None)
@@ -529,12 +529,12 @@ def test_f12_then_other_key_cancels(spawned):
                       and _files(write_dir)[0].read_text() == "back to writing")
 
 
-def test_f12_then_f2_also_cancels_rather_than_rotating(spawned):
-    """A second hotkey other than F12 while armed must still cancel, not
+def test_f10_then_f2_also_cancels_rather_than_rotating(spawned):
+    """A second hotkey other than F10 while armed must still cancel, not
     silently do nothing and not perform its own normal action."""
     _proc, master_fd, write_dir = spawned
-    _type(master_fd, F12_BYTES)
-    _read_until(master_fd, b"Press F12 again")
+    _type(master_fd, F10_BYTES)
+    _read_until(master_fd, b"Press F10 again")
     _type(master_fd, F2_BYTES)
     out = _read_until(master_fd, b"(cancelled)")
     assert b"(cancelled)" in out

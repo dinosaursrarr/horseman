@@ -112,7 +112,7 @@ def decide_patterns(status, wifi_connected, now):
          Heartbeat necessarily goes stale at that point (nothing is
          updating it), which would otherwise look identical to a crash -
          this flag exists specifically so it doesn't.
-      2. confirm_shell - F12 was pressed once, waiting on a second press
+      2. confirm_shell - F10 was pressed once, waiting on a second press
          or a cancel.
       3. setup - an interactive WiFi/sync setup flow in progress, unless
          it's been sitting for over STALE_SETUP_TIMEOUT (a crash or power

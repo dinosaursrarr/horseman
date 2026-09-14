@@ -11,8 +11,8 @@ read_escape_sequence for why that needs real parsing):
   F2            end the current entry (next keystroke starts a new file)
   F8             enter WiFi setup (SSID, then password, then connect)
   Escape        cancel WiFi setup and return to writing
-  F12, F12      press twice to drop to a real login shell for
-                maintenance (any other key after the first F12 cancels).
+  F10, F10      press twice to drop to a real login shell for
+                maintenance (any other key after the first F10 cancels).
                 login() handles authentication itself - this never
                 touches a password. 'exit' the shell to come back;
                 systemd's Restart=always relaunches writer.py.
@@ -154,7 +154,7 @@ def read_escape_sequence(fd):
     session) is read and discarded rather than left to leak into the
     document as literal characters.
 
-    Returns "escape", "f2", "f8", "f12", or None (recognised-or-not, safe
+    Returns "escape", "f2", "f8", "f10", or None (recognised-or-not, safe
     to ignore either way).
     """
     ready, _, _ = select.select([fd], [], [], ESCAPE_SEQ_TIMEOUT)
@@ -184,7 +184,7 @@ def read_escape_sequence(fd):
             if not nxt.isdigit():
                 return None  # not a form we recognise; already consumed
             digits += nxt
-        return {b"19": "f8", b"24": "f12"}.get(digits)  # other F-keys: unused
+        return {b"19": "f8", b"21": "f10"}.get(digits)  # other F-keys: unused
 
     return None  # single-bracket arrow keys (ESC [ A/B/C/D) etc - discard
 
@@ -264,7 +264,7 @@ def main():
                     key = read_escape_sequence(fd)
 
                     if mode == "confirm_shell":
-                        if key == "f12":
+                        if key == "f10":
                             set_status(confirm_shell=None,
                                        maintenance_mode=time.time())
                             drop_to_shell(entry, saved_termios, fd)
@@ -284,9 +284,9 @@ def main():
                         os.write(1, b"\r\nWiFi SSID: ")
                         set_status(setup={"flow": "wifi", "stage": 1,
                                            "phase": "field", "since": time.time()})
-                    elif key == "f12" and mode == "writing":
+                    elif key == "f10" and mode == "writing":
                         mode = "confirm_shell"
-                        os.write(1, b"\r\nPress F12 again for maintenance "
+                        os.write(1, b"\r\nPress F10 again for maintenance "
                                     b"shell, any other key to cancel...")
                         set_status(confirm_shell=time.time())
                     elif key == "escape" and mode in ("ssid", "password"):
